@@ -159,15 +159,40 @@
       .addTo(map);
   });
 
-  // On load: fetch each leg, add to map, then show them all
+  // On load: fetch each leg, add to map, then show them all and load waypoints
   map.on('load', async () => {
     for (const seg of allSegments) {
       await loadSegment(seg);
     }
-    // Show all legs, generate combined profile
     showAllLegs();
-    // Load all waypoints
     loadAllWaypoints();
+  });
+
+  // Re-add layers when style changes
+  map.on('style.load', async () => {
+    // Re-add each route if needed
+    for (const seg of allSegments) {
+      // Check if the source is already there; if not, re-add it.
+      if (!map.getSource(seg.id)) {
+        // If we already fetched the feature, use it; otherwise, load it.
+        if (seg.feature) {
+          map.addSource(seg.id, { type: 'geojson', data: { type: 'FeatureCollection', features: [seg.feature] } });
+          map.addLayer({
+            id: `${seg.id}-layer`,
+            type: 'line',
+            source: seg.id,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': seg.color, 'line-width': 4 }
+          });
+        } else {
+          await loadSegment(seg);
+        }
+      }
+    }
+    // Re-add waypoints layer if needed
+    if (!map.getSource('waypoints')) {
+      loadAllWaypoints();
+    }
   });
 
   // Load a single leg's GeoJSON
