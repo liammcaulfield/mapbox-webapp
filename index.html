@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>CanyonLands and Colorado River Extravaganza</title>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.css" rel="stylesheet"/>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      font-family: sans-serif;
+    }
+    #map {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    }
+    /* Download GPX Button (top-left) */
+    #downloadGPX {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      padding: 10px 15px; background: #28a745; color: #fff;
+      border: none; border-radius: 5px; cursor: pointer;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+    /* Sidebar */
+    #sidebar {
+      position: absolute; top: 10%; left: 10px; width: 280px;
+      background: #fff; padding: 15px; border: 1px solid #ddd;
+      box-shadow: 2px 2px 10px rgba(0,0,0,0.2); z-index: 3; display: none;
+    }
+    #sidebar h2 { margin-top: 0; font-size: 1.2em; }
+    #closeSidebar {
+      float: right; cursor: pointer; background: #ddd; border: none;
+      padding: 2px 6px; font-size: 0.9em;
+    }
+    #details-content { margin-top:10px; }
+
+    /* Elevation Profile */
+    #elevation-profile {
+      position: absolute; left:0; right:0; bottom:0; height:220px;
+      background:#fff; display:none; z-index:2; border-top:1px solid #ddd;
+    }
+    #elevation-header {
+      background:#28a745; color:#fff; padding:5px; text-align:center; font-weight:bold; cursor:pointer;
+    }
+    #elevation-plot { height:calc(100% - 35px); }
+
+    /* Controls (bottom-right) */
+    #controls {
+      position:absolute; bottom:20px; right:20px; z-index:4;
+      display:flex; gap:10px; flex-wrap:wrap;
+    }
+    .circle-button {
+      background:#007cbf; border:none; border-radius:50%;
+      width:50px; height:50px; color:#fff; font-size:14px;
+      cursor:pointer; outline:none; box-shadow:0 2px 4px rgba(0,0,0,0.3);
+      display:flex; align-items:center; justify-content:center;
+    }
+    .circle-button:active { transform:scale(0.95); }
+
+    /* Leg Buttons (bottom-left) */
+    #legButtons {
+      position:absolute; bottom:20px; left:20px; z-index:5;
+      display:flex; gap:10px;
+    }
+    .leg-btn {
+      background:#888; border:none; padding:10px 15px;
+      color:#fff; border-radius:20px; cursor:pointer;
+      box-shadow:0 2px 4px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Download GPX -->
+<button id="downloadGPX">Download GPX</button>
+
+<!-- The Map -->
+<div id="map"></div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <button id="closeSidebar">X</button>
+  <h2>Route Details</h2>
+  <div id="details-content">Loading...</div>
+  <button id="clearSelection" class="circle-button" style="background:#555;">Clear</button>
+</div>
+
+<!-- Elevation Profile -->
+<div id="elevation-profile">
+  <div id="elevation-header">Hide Elevation Profile</div>
+  <div id="elevation-plot"></div>
+</div>
+
+<!-- Controls (bottom-right) -->
+<div id="controls">
+  <button id="toggleView" class="circle-button">2D</button>
+  <button id="resetTrueNorth" class="circle-button" title="Reset Bearing">↑</button>
+  <button id="toggleElevationProfile" class="circle-button" style="background:#28a745;">EP</button>
+  <button id="toggleBasemap" class="circle-button" style="background:#e67e22;">Sat</button>
+  <div style="display:flex; flex-direction:column; align-items:center;">
+    <label for="rotate-slider" style="font-size:12px; margin-bottom:2px;">Rotate</label>
+    <input type="range" id="rotate-slider" min="0" max="360" value="0" style="width:50px;">
+    <div id="rotateValue" style="font-size:12px;">0°</div>
+  </div>
+</div>
+
+<!-- Leg Buttons (bottom-left) -->
+<div id="legButtons">
+  <button class="leg-btn" id="btnLeg1">Show Leg 1</button>
+  <button class="leg-btn" id="btnLeg2">Show Leg 2</button>
+  <button class="leg-btn" id="btnLeg3">Show Leg 3</button>
+</div>
+
+<script src="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+<script>
+  mapboxgl.accessToken = 'pk.eyJ1IjoibGlhbWNhdWxmaWVsZCIsImEiOiJjbTduaHBid2gwMWF4MmtvaDZwdmFrOXIxIn0.tDgIlzApKEeeIhFdlNsneA';
+
+  // Leg objects
+  let leg1 = { id: 'leg1', file: 'leg1_merged.geojson', color: '#FF0000' };
+  let leg2 = { id: 'leg2', file: 'leg2_merged.geojson', color: '#FF0000' };
+  let leg3 = { id: 'leg3', file: 'leg3_merged.geojson', color: '#FF0000' };
+  let allSegments = [leg1, leg2, leg3];
+
+  // We'll show them all on load, so we call that "all legs" mode
+  let allLegsVisible = true;
+  // If the user picks a single leg, we store it in selectedSegment
+  let selectedSegment = null;
+
+  // For the elevation profile
+  const numElevationSamples = 100;
+
+  // Create the map
+  const initialCenter = [-109.55, 38.57];
+  const initialZoom = 8;
+  const initialPitch = 60;
+  const initialBearing = -17.6;
+
+  let map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/outdoors-v12',
+    center: initialCenter,
+    zoom: initialZoom,
+    pitch: initialPitch,
+    bearing: initialBearing
+  });
+  map.addControl(new mapboxgl.NavigationControl());
+  map.addControl(new mapboxgl.ScaleControl());
+
+  // Campground Markers
+  const campgroundCoords = [
+    { coords: [-109.733438, 38.361314], name: 'Campground 1' },
+    { coords: [-109.736163, 38.441823], name: 'Campground 2' }
+  ];
+  campgroundCoords.forEach(c => {
+    new mapboxgl.Marker({ color: 'green' })
+      .setLngLat(c.coords)
+      .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<strong>${c.name}</strong>`))
+      .addTo(map);
+  });
+
+  // On load: fetch each leg, add to map, then show them all
+  map.on('load', async () => {
+    for (const seg of allSegments) {
+      await loadSegment(seg);
+    }
+    // Show all legs, generate combined profile
+    showAllLegs();
+    // Load all waypoints
+    loadAllWaypoints();
+  });
+
+  // Load a single leg's GeoJSON
+  async function loadSegment(segObj) {
+    try {
+      const resp = await fetch(segObj.file);
+      if (!resp.ok) {
+        console.log(`Could not load ${segObj.file}`);
+        return;
+      }
+      const data = await resp.json();
+      const feat = data.features?.[0];
+      if (!feat) {
+        console.log(`No features in ${segObj.file}`);
+        return;
+      }
+      segObj.feature = feat;
+      segObj.distanceKm = turf.length(feat, { units: 'kilometers' });
+      // Add to map
+      map.addSource(segObj.id, { type: 'geojson', data });
+      map.addLayer({
+        id: `${segObj.id}-layer`,
+        type: 'line',
+        source: segObj.id,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': segObj.color, 'line-width': 4 }
+      });
+      console.log(`${segObj.id} => ${segObj.distanceKm.toFixed(2)} km`);
+    } catch (err) {
+      console.error("Error loading segment:", segObj.id, err);
+    }
+  }
+
+  // Show all legs
+  function showAllLegs() {
+    allLegsVisible = true;
+    selectedSegment = null; // no single segment selected
+    // Make each leg layer visible
+    for (const seg of allSegments) {
+      if (map.getLayer(`${seg.id}-layer`)) {
+        map.setLayoutProperty(`${seg.id}-layer`, 'visibility', 'visible');
+      }
+    }
+    // Fit map to the bounding box of all legs
+    let allFeatures = [];
+    for (const seg of allSegments) {
+      if (seg.feature) {
+        allFeatures.push(seg.feature);
+      }
+    }
+    if (allFeatures.length > 0) {
+      const fc = turf.featureCollection(allFeatures);
+      const bbox = turf.bbox(fc);
+      map.fitBounds(bbox, { padding: 20 });
+    }
+    // Sum distances
+    let totalDist = 0;
+    for (const seg of allSegments) {
+      if (seg.distanceKm) totalDist += seg.distanceKm;
+    }
+    // Update sidebar
+    updateSidebarAllLegs(totalDist);
+    // Generate combined elevation profile
+    generateElevationProfileForAllLegs();
+  }
+
+  // Show a single leg
+  function showLeg(segObj) {
+    if (!segObj.feature) {
+      alert(`No data for ${segObj.id}`);
+      return;
+    }
+    allLegsVisible = false;
+    selectedSegment = segObj;
+    // Hide others
+    for (const leg of allSegments) {
+      map.setLayoutProperty(`${leg.id}-layer`, 'visibility', leg === segObj ? 'visible' : 'none');
+    }
+    // Fit map
+    let fc = turf.featureCollection([segObj.feature]);
+    let bbox = turf.bbox(fc);
+    map.fitBounds(bbox, { padding: 20 });
+    // Update sidebar
+    updateSidebarSingleLeg(segObj);
+    // Generate single-leg elevation
+    generateElevationProfileForLeg(segObj.feature, segObj.distanceKm);
+  }
+
+  // CLEAR => revert to all legs
+  document.getElementById('clearSelection').addEventListener('click', () => {
+    showAllLegs();
+  });
+
+  // Sidebar: All legs
+  function updateSidebarAllLegs(totalDist) {
+    document.getElementById('sidebar').style.display = 'block';
+    let html = `<p><strong>Route Distance (All Legs):</strong> ${totalDist.toFixed(2)} km</p>`;
+    document.getElementById('details-content').innerHTML = html;
+  }
+
+  // Sidebar: Single leg
+  function updateSidebarSingleLeg(segObj) {
+    document.getElementById('sidebar').style.display = 'block';
+    let html = `<p><strong>${segObj.id} Distance:</strong> ${segObj.distanceKm?.toFixed(2)} km</p>`;
+    const props = segObj.feature.properties || {};
+    for (let k in props) {
+      html += `<p><strong>${k}:</strong> ${props[k]}</p>`;
+    }
+    document.getElementById('details-content').innerHTML = html;
+  }
+
+  // Generate a combined elevation profile for all legs
+  async function generateElevationProfileForAllLegs() {
+    // We'll sample each leg in sequence, offsetting the distance
+    let distArray = [];
+    let elevArray = [];
+    let offset = 0;
+
+    for (const seg of allSegments) {
+      if (!seg.feature || !seg.distanceKm) continue;
+      const coords = getCoordinates(seg.feature.geometry);
+      if (coords.length < 2) continue;
+      const legDist = seg.distanceKm;
+      // Sample
+      let sampled = [];
+      for (let i = 0; i <= numElevationSamples; i++) {
+        let dist = legDist * (i / numElevationSamples);
+        let pt = turf.along(turf.lineString(coords), dist, { units: 'kilometers' });
+        sampled.push(pt.geometry.coordinates);
+      }
+      // Fetch elevations
+      const locs = sampled.map(pt => `${pt[1]},${pt[0]}`).join("|");
+      let elevData = [];
+      try {
+        const r = await fetch("https://api.open-elevation.com/api/v1/lookup?locations=" + encodeURIComponent(locs));
+        const json = await r.json();
+        elevData = json.results.map(d => d.elevation);
+      } catch (err) {
+        console.error("Elevation fetch error for leg:", seg.id, err);
+        return;
+      }
+      // Build dist/elev arrays
+      for (let i = 0; i < elevData.length; i++) {
+        let frac = i / (elevData.length - 1);
+        let distOnLeg = legDist * frac;
+        distArray.push(offset + distOnLeg);
+        elevArray.push(elevData[i]);
+      }
+      offset += legDist;
+    }
+
+    if (!distArray.length) {
+      document.getElementById('elevation-plot').innerHTML = "No elevation data available.";
+      document.getElementById('elevation-profile').style.display = 'block';
+      return;
+    }
+    // Plot
+    const trace = {
+      x: distArray,
+      y: elevArray,
+      type: 'scatter',
+      mode: 'lines',
+      line: { color: 'green' }
+    };
+    const layout = {
+      title: 'Elevation Profile (All Legs)',
+      xaxis: { title: 'Distance (km)', range: [0, offset] },
+      yaxis: { title: 'Elevation (m)' },
+      margin: { t: 40, r: 10, l: 40, b: 40 }
+    };
+    Plotly.newPlot('elevation-plot', [trace], layout);
+    document.getElementById('elevation-profile').style.display = 'block';
+  }
+
+  // Generate a single-leg elevation profile
+  async function generateElevationProfileForLeg(feature, distKm) {
+    if (!feature || !feature.geometry) return;
+    const coords = getCoordinates(feature.geometry);
+    if (!coords.length) {
+      document.getElementById('elevation-plot').innerHTML = "No route coordinates.";
+      document.getElementById('elevation-profile').style.display = 'block';
+      return;
+    }
+    // Sample
+    let sampled = [];
+    for (let i = 0; i <= numElevationSamples; i++) {
+      let dist = distKm * (i / numElevationSamples);
+      let pt = turf.along(turf.lineString(coords), dist, { units: 'kilometers' });
+      sampled.push(pt.geometry.coordinates);
+    }
+    // Elevation
+    const locs = sampled.map(pt => `${pt[1]},${pt[0]}`).join("|");
+    try {
+      const r = await fetch("https://api.open-elevation.com/api/v1/lookup?locations=" + encodeURIComponent(locs));
+      const json = await r.json();
+      const elevations = json.results.map(d => d.elevation);
+      let distArr = [];
+      for (let i = 0; i < elevations.length; i++) {
+        distArr.push(distKm * i / (elevations.length - 1));
+      }
+      const trace = {
+        x: distArr,
+        y: elevations,
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: 'green' }
+      };
+      const layout = {
+        title: 'Elevation Profile',
+        xaxis: { title: 'Distance (km)', range: [0, distKm] },
+        yaxis: { title: 'Elevation (m)' },
+        margin: { t: 40, r: 10, l: 40, b: 40 }
+      };
+      Plotly.newPlot('elevation-plot', [trace], layout);
+      document.getElementById('elevation-profile').style.display = 'block';
+    } catch (err) {
+      console.error("Elevation fetch error (single leg):", err);
+      document.getElementById('elevation-plot').innerHTML = "Elevation data unavailable.";
+      document.getElementById('elevation-profile').style.display = 'block';
+    }
+  }
+
+  // Get coordinates from geometry
+  function getCoordinates(geom) {
+    if (!geom) return [];
+    if (geom.type === 'LineString') return geom.coordinates;
+    if (geom.type === 'MultiLineString') return geom.coordinates.flat();
+    return [];
+  }
+
+  // Show Leg 1, Leg 2, Leg 3
+  document.getElementById('btnLeg1').addEventListener('click', () => showLeg(leg1));
+  document.getElementById('btnLeg2').addEventListener('click', () => showLeg(leg2));
+  document.getElementById('btnLeg3').addEventListener('click', () => showLeg(leg3));
+
+  // Load all waypoints from the file
+  async function loadAllWaypoints() {
+    try {
+      const resp = await fetch('filtered_waypoints.geojson');
+      if (!resp.ok) {
+        console.log("filtered_waypoints.geojson not found?");
+        return;
+      }
+      const data = await resp.json();
+      map.addSource('waypoints', { type: 'geojson', data });
+      map.addLayer({
+        id: 'waypoints-layer',
+        type: 'circle',
+        source: 'waypoints',
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#007cbf'
+        }
+      });
+      // Popup on click
+      map.on('click', 'waypoints-layer', e => {
+        const feat = e.features[0];
+        const props = feat.properties || {};
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`<strong>Waypoint:</strong> ${props.name || 'N/A'}`)
+          .addTo(map);
+      });
+    } catch (err) {
+      console.error("Error loading waypoints:", err);
+    }
+  }
+
+  // Download GPX => If allLegsVisible, combine them. If single leg, just that one
+  document.getElementById('downloadGPX').addEventListener('click', () => {
+    if (allLegsVisible) {
+      // Multi-segment GPX with all legs
+      const gpx = convertAllLegsToGPX();
+      if (!gpx) {
+        alert("No legs found to export.");
+        return;
+      }
+      downloadGPX(gpx, "all_legs_route.gpx");
+    } else {
+      // Single leg
+      if (!selectedSegment || !selectedSegment.feature) {
+        alert("No route selected for GPX export.");
+        return;
+      }
+      const singleGpx = convertSingleRouteToGPX(selectedSegment.feature);
+      downloadGPX(singleGpx, `${selectedSegment.id}.gpx`);
+    }
+  });
+
+  // Convert all legs => multi-segment GPX
+  function convertAllLegsToGPX() {
+    let hasAtLeastOne = false;
+    let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+    gpx += `<gpx version="1.1" creator="YourAppName" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+    gpx += `  <trk>\n`;
+    gpx += `    <name>All Legs</name>\n`;
+    for (const seg of allSegments) {
+      if (!seg.feature || !seg.feature.geometry) continue;
+      let coords = getCoordinates(seg.feature.geometry);
+      if (!coords.length) continue;
+      hasAtLeastOne = true;
+      gpx += `    <trkseg>\n`;
+      coords.forEach(coord => {
+        let lon = coord[0], lat = coord[1];
+        gpx += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`;
+      });
+      gpx += `    </trkseg>\n`;
+    }
+    gpx += `  </trk>\n`;
+    gpx += `</gpx>`;
+    return hasAtLeastOne ? gpx : "";
+  }
+
+  // Convert a single route (LineString or MultiLineString) => GPX
+  function convertSingleRouteToGPX(feature) {
+    if (!feature.geometry) return '';
+    let coordsList = [];
+    if (feature.geometry.type === 'LineString') {
+      coordsList.push(feature.geometry.coordinates);
+    } else if (feature.geometry.type === 'MultiLineString') {
+      coordsList = feature.geometry.coordinates;
+    } else {
+      return '';
+    }
+    let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+    gpx += `<gpx version="1.1" creator="YourAppName" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+    gpx += `  <trk>\n`;
+    gpx += `    <name>Route</name>\n`;
+    coordsList.forEach(lineCoords => {
+      gpx += `    <trkseg>\n`;
+      lineCoords.forEach(coord => {
+        let lon = coord[0], lat = coord[1];
+        gpx += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`;
+      });
+      gpx += `    </trkseg>\n`;
+    });
+    gpx += `  </trk>\n`;
+    gpx += `</gpx>`;
+    return gpx;
+  }
+
+  // Trigger a file download
+  function downloadGPX(gpxStr, filename) {
+    if (!gpxStr) {
+      alert("No GPX data available.");
+      return;
+    }
+    const blob = new Blob([gpxStr], { type: "application/gpx+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Toggle Basemap
+  let currentStyle = 'outdoors-v12';
+  document.getElementById('toggleBasemap').addEventListener('click', () => {
+    if (currentStyle === 'outdoors-v12') {
+      map.setStyle('mapbox://styles/mapbox/satellite-v9');
+      currentStyle = 'satellite-v9';
+      document.getElementById('toggleBasemap').innerText = 'Outdoors';
+    } else {
+      map.setStyle('mapbox://styles/mapbox/outdoors-v12');
+      currentStyle = 'outdoors-v12';
+      document.getElementById('toggleBasemap').innerText = 'Sat';
+    }
+  });
+
+  // 2D/3D Toggle
+  let is2D = false;
+  document.getElementById('toggleView').addEventListener('click', () => {
+    if (!is2D) {
+      map.setPitch(0);
+      is2D = true;
+    } else {
+      map.setPitch(initialPitch);
+      is2D = false;
+    }
+  });
+
+  // Reset Bearing
+  document.getElementById('resetTrueNorth').addEventListener('click', () => {
+    map.setBearing(0);
+    document.getElementById('rotate-slider').value = 0;
+    document.getElementById('rotateValue').innerText = '0°';
+  });
+
+  // Rotate slider
+  document.getElementById('rotate-slider').addEventListener('input', e => {
+    const bearing = parseInt(e.target.value);
+    map.setBearing(bearing);
+    document.getElementById('rotateValue').innerText = bearing + '°';
+  });
+
+  // Toggle Elevation Profile
+  document.getElementById('toggleElevationProfile').addEventListener('click', () => {
+    const profEl = document.getElementById('elevation-profile');
+    if (profEl.style.display === 'block') {
+      profEl.style.display = 'none';
+    } else {
+      // Re-generate the profile based on current mode
+      if (allLegsVisible) {
+        generateElevationProfileForAllLegs();
+      } else if (selectedSegment && selectedSegment.feature) {
+        generateElevationProfileForLeg(selectedSegment.feature, selectedSegment.distanceKm);
+      }
+      profEl.style.display = 'block';
+    }
+  });
+
+  // Hide elevation by clicking the header
+  document.getElementById('elevation-header').addEventListener('click', () => {
+    const profEl = document.getElementById('elevation-profile');
+    profEl.style.display = (profEl.style.display === 'none') ? 'block' : 'none';
+  });
+
+  // Track nearest point on route
+  let cursorMarker = new mapboxgl.Marker({ color: 'blue' });
+  map.on('mousemove', e => {
+    // If all legs visible, we can pick the nearest among them all, or skip
+    if (allLegsVisible) {
+      // For simplicity, skip the nearest-on-all. Or pick the first leg
+      return;
+    }
+    // If single leg is displayed, find nearest point
+    if (selectedSegment && selectedSegment.feature) {
+      const coords = getCoordinates(selectedSegment.feature.geometry);
+      if (!coords.length) return;
+      let line = turf.lineString(coords);
+      let nearest = turf.nearestPointOnLine(line, [e.lngLat.lng, e.lngLat.lat]);
+      cursorMarker.setLngLat(nearest.geometry.coordinates);
+    }
+  });
+
+  // Close sidebar
+  document.getElementById('closeSidebar').addEventListener('click', () => {
+    document.getElementById('sidebar').style.display = 'none';
+  });
+</script>
+</body>
+</html>
